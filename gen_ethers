@@ -1,0 +1,74 @@
+#!/usr/bin/awk -f
+
+# By Truman Collins
+# March 3, 2025
+#
+# Run on the OpenWrt router to generate an ethers file for use by APs.
+# Provide it the pathname to the dhcp configuration file, normally
+# /etc/config/dhcp.
+
+BEGIN {
+
+  # Read in the dhcp file and create an array of MAC address to hostnames.
+    
+  in_host_decl = 0;
+  curr_mac = "";
+  curr_mac_list="";
+  curr_name = "";
+}
+
+# Take the list of MAC addresses and name and add them to the map array.
+# Clear variables for next hostname.
+
+function store_mac_name_pairs() {
+  delete macs;
+  split(curr_mac_list, macs, ",");
+  for(mac in macs) {
+    mac_to_name[macs[mac]] = curr_name;
+  }
+  curr_mac = "";
+  curr_mac_list = "";
+  curr_name = "";
+}
+
+# Remove the tick marks from both ends of the MAC address and save it in
+# the currently accumulating list of MAC addresses separated by commas.
+
+function save_mac_address() {
+  curr_mac = toupper(substr($3, 2, length($3) - 2));
+  if (curr_mac_list == "") curr_mac_list = curr_mac;
+  else curr_mac_list=curr_mac "," curr_mac_list;
+}
+
+{
+  if ($1 == "config" && $2 == "host") {
+    if (in_host_decl == 1) store_mac_name_pairs();
+    in_host_decl=1;
+  }
+
+  if ($1 == "config" && $2 != "host") {
+    if (in_host_decl == 1) store_mac_name_pairs();
+    in_host_decl=0;
+  }
+
+  if ($1 == "option" && $2 == "name") {
+    curr_name = substr($3, 2, length($3) - 2);
+  }
+
+  if ($1 == "option" && $2 == "mac") save_mac_address();
+
+  if ($1 == "list" && $2 == "mac") save_mac_address();
+}
+
+END {
+
+  # There may be an active one we need to store.
+
+  if (in_host_decl == 1) store_mac_name_pairs();
+
+  # This section is used to generate an ethers file.
+    
+  for(mac in mac_to_name) {
+    print mac, mac_to_name[mac];
+  }
+}

@@ -1,0 +1,163 @@
+#!/usr/bin/gawk -f
+
+# By Truman Collins
+# February 15, 2025
+#
+# Run on the OpenWrt router on a log file from dnsmasq.
+# Note that this version uses gawk, and takes advantage of its sorting
+# capabilities, so the device names reported are sorted, and the domain
+# names are sorted alphabetically from right to left on the strings
+# separated by '.'
+
+BEGIN {
+
+  # Read in the dhcp file and create an array of MAC address to hostnames.
+    
+  in_host_decl = 0;
+  curr_mac = "";
+  curr_mac_list="";
+  curr_name = "";
+  cat_dhcp_cmd = "cat /etc/config/dhcp";
+  while ((cat_dhcp_cmd | getline) > 0) {
+    if ($1 == "config" && $2 == "host") {
+      if (in_host_decl == 1) store_mac_name_pairs();
+      in_host_decl=1;
+    }
+
+    if ($1 == "config" && $2 != "host") {
+      if (in_host_decl == 1) store_mac_name_pairs();
+      in_host_decl=0;
+    }
+
+    if ($1 == "option" && $2 == "name") {
+      curr_name = substr($3, 2, length($3) - 2);
+    }
+
+    if ($1 == "option" && $2 == "mac") save_mac_address();
+
+    if ($1 == "list" && $2 == "mac") save_mac_address();
+  }
+  if (in_host_decl == 1) store_mac_name_pairs();
+  close(cat_dhcp_cmd);
+
+  # Now get the results of "ip neigh" and store the mappings from IPV4 and IPV6
+  # addresses to MAC address.
+
+  neigh_cmd = "ip neigh";
+  while ((neigh_cmd | getline) > 0) {
+      if (NF == 10 || NF == 12) ip_to_mac[$1] = toupper($5);
+  }
+  close(neigh_cmd);
+}
+
+# Take the list of MAC addresses and name and add them to the map array.
+# Clear variables for next hostname.
+
+function store_mac_name_pairs() {
+  delete macs;
+  split(curr_mac_list, macs, ",");
+  for(mac in macs) {
+    mac_to_name[macs[mac]] = curr_name;
+  }
+  curr_mac = "";
+  curr_mac_list = "";
+  curr_name = "";
+}
+
+# Remove the tick marks from both ends of the MAC address and save it in
+# the currently accumulating list of MAC addresses separated by commas.
+
+function save_mac_address() {
+  curr_mac = toupper(substr($3, 2, length($3) - 2));
+  if (curr_mac_list == "") curr_mac_list = curr_mac;
+  else curr_mac_list=curr_mac "," curr_mac_list;
+}
+
+{
+  # Only interested in query lines that aren't from the localhost.
+    
+  if (NF == 10 && $7 ~ /query\[/ && $6 !~ /127.0.0.1/) {
+    if ($10 in ip_to_mac) {
+      mac = ip_to_mac[$10];
+      if (mac in mac_to_name) {
+        user_nm = mac_to_name[mac];
+      } else {
+        user_nm = mac;
+      }
+    } else {
+      user_nm = $10;
+    }
+    if (user_nm in domain_uses) {
+      domain_uses[user_nm] = $8 "," domain_uses[user_nm];
+    } else {
+      domain_uses[user_nm] = $8;
+    }
+  }
+}
+
+END {
+
+# This section can be used to generate an ethers file.
+    
+#  print "MAC to Name Mappings:";
+#  for(mac in mac_to_name) {
+#    print mac, mac_to_name[mac];
+#  }
+
+#  print "IP to MAC Mappings:";
+#  for(i in ip_to_mac) {
+#    print i, ip_to_mac[i];
+#  }
+
+  print "Domain Uses By Device:";
+  n = asorti(domain_uses, dus, "case_ignore_compare");
+#  n = asorti(domain_uses, dus);
+  for(i = 1; i <= n; i++) {
+    nm = dus[i];
+    delete domains;
+    delete domain_counts;
+    split(domain_uses[nm], domains, ",");
+    for(dmi in domains) {
+      domain_counts[domains[dmi]]++;
+    }
+    print nm
+    m = asorti(domain_counts, dci, "compare_domain_name");
+    for(j = 1; j <= m; j++) {
+      dm = dci[j];
+      print "    ", dm, " " domain_counts[dm];
+    }
+  }
+}
+
+function case_ignore_compare(i1, v1, i2, v2,    l, r)
+{
+  l = tolower(i1);
+  r = tolower(i2);
+
+  if (l < r) return -1;
+  else if (l == r) return 0;
+  else return 1;
+}
+
+function compare_domain_name(i1, v1, i2, v2,    l, ln, la, li, r, rn, ra, ri)
+{
+  l = tolower(i1);
+  ln = split(l, la, ".");
+  r = tolower(i2);
+  rn = split(r, ra, ".");
+
+  li = ln;
+  ri = rn;
+  while (li > 0 && ri > 0) {
+    if(la[li] < ra[ri]) return -1;
+    else if(la[li] > ra[ri]) return 1;
+    else {
+      li--;
+      ri--;
+    }
+  }
+  
+  if(li == 0 && ri == 0) return 0;
+  else if(li == 0) return -1;
+  else return 1;
+}
